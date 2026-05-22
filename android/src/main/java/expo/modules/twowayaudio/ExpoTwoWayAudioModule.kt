@@ -62,6 +62,10 @@ class ExpoTwoWayAudioModule : Module() {
              audioEngine?.playPCMData(data)
          }
 
+         Function("flushPlayback") {
+             audioEngine?.flushPlayback()
+         }
+
          Function("bypassVoiceProcessing") { bypass: Boolean ->
              audioEngine?.bypassVoiceProcessing(bypass)
          }

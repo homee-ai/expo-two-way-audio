@@ -21,7 +21,7 @@ import kotlin.math.pow
 
 
 class AudioEngine (context: Context) {
-    private val SAMPLE_RATE = 16000
+    private val SAMPLE_RATE = 24000
     private val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     private val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
 
@@ -256,6 +256,20 @@ class AudioEngine (context: Context) {
         if (!isPlaying) {
             playAudioFromSampleQueue()
         }
+    }
+
+    // Drop any pending or in-flight playback so a caller (e.g. barge-in) can
+    // start a fresh playback session without leftover audio.
+    fun flushPlayback() {
+        audioSampleQueue.clear()
+        try {
+            audioTrack.pause()
+            audioTrack.flush()
+            audioTrack.play()
+        } catch (e: Exception) {
+            Log.e("AudioEngine", "Error flushing playback", e)
+        }
+        onOutputVolumeCallback?.invoke(0.0F)
     }
 
     private fun playAudioFromSampleQueue() {
