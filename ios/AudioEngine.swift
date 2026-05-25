@@ -15,6 +15,14 @@ class AudioEngine {
     public var onInputVolumeCallback: ((Float) -> Void)?
     public var onOutputVolumeCallback: ((Float) -> Void)?
     public var onAudioInterruptionCallback: ((String) -> Void)?
+    public var onPlaybackQueueEmptyCallback: (() -> Void)?
+
+    // Tracks scheduled-but-not-yet-played buffers. Fires onPlaybackQueueEmptyCallback
+    // when the count transitions to 0. flushPlayback() bumps `playbackGeneration`
+    // so completion handlers for dropped buffers don't decrement the next session's count.
+    private let bufferCountQueue = DispatchQueue(label: "expo-two-way-audio.bufferCount")
+    private var pendingBufferCount: Int = 0
+    private var playbackGeneration: Int = 0
     
     private var inputLevelTimer: Timer?
     private var outputLevelTimer: Timer?
@@ -35,7 +43,7 @@ class AudioEngine {
     init() throws {
         avAudioEngine.attach(speechPlayer)
         
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1) else {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else {
             throw AudioEngineError.audioFormatError
         }
         voiceIOFormat = format
@@ -200,23 +208,44 @@ class AudioEngine {
             print("Failed to create audio buffer")
             return
         }
-        speechPlayer.scheduleBuffer(buffer)
-        
+
+        let myGeneration = self.bufferCountQueue.sync { () -> Int in
+            self.pendingBufferCount += 1
+            return self.playbackGeneration
+        }
+        speechPlayer.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            self?.handleBufferPlayed(generation: myGeneration)
+        }
+
         if !speechPlayer.isPlaying {
             speechPlayer.play()
+        }
+    }
+
+    private func handleBufferPlayed(generation: Int) {
+        var shouldFire = false
+        self.bufferCountQueue.sync {
+            // Ignore completion handlers from a previous (flushed) playback session.
+            guard generation == self.playbackGeneration else { return }
+            if self.pendingBufferCount > 0 {
+                self.pendingBufferCount -= 1
+                if self.pendingBufferCount == 0 {
+                    shouldFire = true
+                }
+            }
+        }
+        if shouldFire {
+            DispatchQueue.main.async { [weak self] in
+                self?.onPlaybackQueueEmptyCallback?()
+            }
         }
     }
 
     
     private func createBuffer(from data: Data) -> AVAudioPCMBuffer? {
         let frameCount = UInt32(data.count) / 2 // 16-bit input = 2 bytes per frame
-        
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                   sampleRate: 16000,
-                                   channels: 1,
-                                   interleaved: false)!
-        
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: voiceIOFormat, frameCapacity: frameCount) else {
             return nil
         }
         
@@ -279,6 +308,22 @@ class AudioEngine {
     func tearDown() {
         stopRecordingAndPlayer()
         avAudioEngine.stop()
+    }
+
+    // Drop any pending or in-flight playback so a caller (e.g. barge-in) can
+    // start a fresh playback session without leftover audio. The player is
+    // restarted in playPCMData via the `!speechPlayer.isPlaying` guard.
+    //
+    // Bumps playbackGeneration so completion handlers for dropped buffers don't
+    // decrement the next session's pendingBufferCount and cause a spurious
+    // onPlaybackQueueEmptyCallback while real audio is still playing.
+    func flushPlayback() {
+        self.bufferCountQueue.sync {
+            self.playbackGeneration &+= 1
+            self.pendingBufferCount = 0
+        }
+        speechPlayer.stop()
+        onOutputVolumeCallback?(0.0)
     }
     
     var isPlaying: Bool {

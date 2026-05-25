@@ -5,8 +5,9 @@ Expo module for capturing and playing pcm audio data in react-native apps (iOS a
 The aim of the module is to facilitate creating real-time conversational apps. The following features are provided:
 
 - Request audio recording permissions
-- Get clean (applying Acoustic Echo Cancelling) microphone samples in PCM format (1 channel 16 bit at 16kHz)
-- Play audio samples in PCM format (1 channel 16 bit at 16kHz). Playback happens through main speaker unless external audio sources are connected.
+- Get clean (applying Acoustic Echo Cancelling) microphone samples in PCM format (1 channel 16 bit at 24kHz)
+- Play audio samples in PCM format (1 channel 16 bit at 24kHz). Playback happens through main speaker unless external audio sources are connected.
+- Flush any pending or in-flight playback synchronously via `flushPlayback()` — useful for barge-in (interrupting a response when the user starts speaking).
 - Provide volume level both for the input and output samples. Float between 0 and 1.
 - [iOS only] Get microphone mode and prompt user to select a microphone mode.
 
@@ -58,6 +59,16 @@ Please check out our [examples/](./examples) to get full sample code.
     const buffer = Buffer.from(audioChunk, "base64");
     const pcmData = new Uint8Array(buffer);
     playPCMData(pcmData);
+   ```
+
+1. Stop playback mid-utterance (barge-in)
+
+   ```JSX
+   import { flushPlayback } from "@speechmatics/expo-two-way-audio";
+
+   // Drops any pending PCM still queued for playback and stops
+   // the player. The next playPCMData call will resume cleanly.
+   flushPlayback();
    ```
 
 1. Get microphone samples

@@ -5,6 +5,7 @@ let ON_INPUT_VOLUME_LEVEL_EVENT_NAME = "onInputVolumeLevelData"
 let ON_OUTPUT_VOLUME_LEVEL_EVENT_NAME = "onOutputVolumeLevelData"
 let ON_RECORDING_CHANGE_EVENT_NAME = "onRecordingChange"
 let ON_AUDIO_INTERRUPTION_EVENT_NAME = "onAudioInterruption"
+let ON_PLAYBACK_QUEUE_EMPTY_EVENT_NAME = "onPlaybackQueueEmpty"
 
 public class ExpoTwoWayAudioModule: Module {
     private var audioEngine: AudioEngine?
@@ -32,6 +33,7 @@ public class ExpoTwoWayAudioModule: Module {
                 self.setupInputAudioLevelCallback()
                 self.setupOutputAudioLevelCallback()
                 self.setupAudioInterruptionCallback()
+                self.setupPlaybackQueueEmptyCallback()
                 return true
             } catch {
                 print("Failed to initialize AudioEngine: \(error)")
@@ -110,6 +112,10 @@ public class ExpoTwoWayAudioModule: Module {
             self.audioEngine?.playPCMData(pcmData)
         }
 
+        Function("flushPlayback") {
+            self.audioEngine?.flushPlayback()
+        }
+
         Function("bypassVoiceProcessing") { (bypass: Bool) in
             self.audioEngine?.bypassVoiceProcessing(bypass)
         }
@@ -143,6 +149,7 @@ public class ExpoTwoWayAudioModule: Module {
             ON_OUTPUT_VOLUME_LEVEL_EVENT_NAME,
             ON_RECORDING_CHANGE_EVENT_NAME,
             ON_AUDIO_INTERRUPTION_EVENT_NAME,
+            ON_PLAYBACK_QUEUE_EMPTY_EVENT_NAME,
         ])
     }
 
@@ -188,6 +195,12 @@ public class ExpoTwoWayAudioModule: Module {
                 [
                     "data": self?.audioEngine?.isRecording
                 ])
+        }
+    }
+
+    private func setupPlaybackQueueEmptyCallback() {
+        audioEngine?.onPlaybackQueueEmptyCallback = { [weak self] in
+            self?.sendEvent(ON_PLAYBACK_QUEUE_EMPTY_EVENT_NAME, [:])
         }
     }
 

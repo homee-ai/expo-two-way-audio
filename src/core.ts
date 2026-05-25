@@ -21,6 +21,10 @@ export function isRecording(): boolean {
   return ExpoTwoWayAudioModule.isRecording();
 }
 
+export function flushPlayback() {
+  return ExpoTwoWayAudioModule.flushPlayback();
+}
+
 export function tearDown() {
   return ExpoTwoWayAudioModule.tearDown();
 }

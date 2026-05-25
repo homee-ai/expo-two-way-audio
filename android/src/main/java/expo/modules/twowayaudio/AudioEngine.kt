@@ -14,14 +14,14 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.RequiresApi
-import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import kotlin.math.pow
 
 
 class AudioEngine (context: Context) {
-    private val SAMPLE_RATE = 16000
+    private val SAMPLE_RATE = 24000
     private val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     private val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
 
@@ -29,7 +29,7 @@ class AudioEngine (context: Context) {
     private lateinit var audioManager: AudioManager
     private lateinit var audioTrack: AudioTrack
     private var audioFocusRequest: AudioFocusRequest? = null
-    private val audioSampleQueue: Queue<ByteArray> = LinkedList()
+    private val audioSampleQueue: Queue<ByteArray> = ConcurrentLinkedQueue()
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private val executorServiceMicrophone = Executors.newFixedThreadPool(1)
@@ -45,6 +45,18 @@ class AudioEngine (context: Context) {
     var onInputVolumeCallback: ((Float) -> Unit)? = null
     var onOutputVolumeCallback: ((Float) -> Unit)? = null
     var onAudioInterruptionCallback: ((String) -> Unit)? = null
+    var onPlaybackQueueEmptyCallback: (() -> Unit)? = null
+
+    // Tracks cumulative frames written so we can update the AudioTrack marker
+    // after each chunk. The OnPlaybackPositionUpdateListener fires when the
+    // playback head reaches the latest marker — i.e. when the queue is drained.
+    // Guarded by playbackLock together with the AudioTrack state mutations in
+    // flushPlayback. playbackGeneration is bumped on every flush so a write
+    // that completed just before the flush doesn't advance the marker into
+    // bytes that were already discarded.
+    private val playbackLock = Any()
+    private var totalFramesWritten: Long = 0L
+    private var playbackGeneration: Long = 0L
 
     init {
         initializeAudio(context)
@@ -93,6 +105,12 @@ class AudioEngine (context: Context) {
             AudioTrack.MODE_STREAM,
             audioManager.generateAudioSessionId()
         ).apply {
+            setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(track: AudioTrack?) {
+                    onPlaybackQueueEmptyCallback?.invoke()
+                }
+                override fun onPeriodicNotification(track: AudioTrack?) {}
+            })
             play()
         }
     }
@@ -258,6 +276,28 @@ class AudioEngine (context: Context) {
         }
     }
 
+    // Drop any pending or in-flight playback so a caller (e.g. barge-in) can
+    // start a fresh playback session without leftover audio.
+    fun flushPlayback() {
+        audioSampleQueue.clear()
+        synchronized(playbackLock) {
+            playbackGeneration += 1
+            try {
+                audioTrack.pause()
+                audioTrack.flush()
+                // AudioTrack.flush()'s effect on getPlaybackHeadPosition() varies
+                // by Android version/OEM, so don't assume it resets to 0 — re-sync
+                // our counter to the real head so the next marker is set ahead of
+                // it. The mask handles the unsigned 32-bit wraparound.
+                totalFramesWritten = audioTrack.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                audioTrack.play()
+            } catch (e: Exception) {
+                Log.e("AudioEngine", "Error flushing playback", e)
+            }
+        }
+        onOutputVolumeCallback?.invoke(0.0F)
+    }
+
     private fun playAudioFromSampleQueue() {
         executorServicePlayback.execute{
             isPlaying = true
@@ -283,7 +323,26 @@ class AudioEngine (context: Context) {
     }
 
     private fun playSample(data: ByteArray) {
-        audioTrack.write(data, 0, data.size)
+        val genBefore = synchronized(playbackLock) { playbackGeneration }
+        val bytesWritten = audioTrack.write(data, 0, data.size)
+        if (bytesWritten <= 0) {
+            if (bytesWritten < 0) {
+                Log.w("AudioEngine", "audioTrack.write returned error $bytesWritten")
+            }
+            return
+        }
+        val frames = bytesWritten / 2 // 16-bit mono PCM → 2 bytes/frame
+        synchronized(playbackLock) {
+            // If a flushPlayback ran during/after our write, the bytes we wrote
+            // were discarded — don't advance the marker into nonexistent audio.
+            if (playbackGeneration != genBefore) return
+            totalFramesWritten += frames
+            try {
+                audioTrack.setNotificationMarkerPosition(totalFramesWritten.toInt())
+            } catch (e: Exception) {
+                Log.e("AudioEngine", "Error setting marker position", e)
+            }
+        }
     }
 
     fun bypassVoiceProcessing(bypass: Boolean) {
