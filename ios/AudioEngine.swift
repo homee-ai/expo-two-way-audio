@@ -323,6 +323,7 @@ class AudioEngine {
             self.pendingBufferCount = 0
         }
         speechPlayer.stop()
+        onOutputVolumeCallback?(0.0)
     }
     
     var isPlaying: Bool {
