@@ -45,6 +45,12 @@ class AudioEngine (context: Context) {
     var onInputVolumeCallback: ((Float) -> Unit)? = null
     var onOutputVolumeCallback: ((Float) -> Unit)? = null
     var onAudioInterruptionCallback: ((String) -> Unit)? = null
+    var onPlaybackQueueEmptyCallback: (() -> Unit)? = null
+
+    // Tracks cumulative frames written so we can update the AudioTrack marker
+    // after each chunk. The OnPlaybackPositionUpdateListener fires when the
+    // playback head reaches the latest marker — i.e. when the queue is drained.
+    private var totalFramesWritten: Long = 0L
 
     init {
         initializeAudio(context)
@@ -93,6 +99,12 @@ class AudioEngine (context: Context) {
             AudioTrack.MODE_STREAM,
             audioManager.generateAudioSessionId()
         ).apply {
+            setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(track: AudioTrack?) {
+                    onPlaybackQueueEmptyCallback?.invoke()
+                }
+                override fun onPeriodicNotification(track: AudioTrack?) {}
+            })
             play()
         }
     }
@@ -259,12 +271,14 @@ class AudioEngine (context: Context) {
     }
 
     // Drop any pending or in-flight playback so a caller (e.g. barge-in) can
-    // start a fresh playback session without leftover audio.
+    // start a fresh playback session without leftover audio. Resets totalFramesWritten
+    // because AudioTrack.flush() resets the playback head to 0.
     fun flushPlayback() {
         audioSampleQueue.clear()
         try {
             audioTrack.pause()
             audioTrack.flush()
+            totalFramesWritten = 0L
             audioTrack.play()
         } catch (e: Exception) {
             Log.e("AudioEngine", "Error flushing playback", e)
@@ -298,6 +312,16 @@ class AudioEngine (context: Context) {
 
     private fun playSample(data: ByteArray) {
         audioTrack.write(data, 0, data.size)
+        // 16-bit mono PCM → 2 bytes/frame. Update marker so onMarkerReached fires
+        // when the playback head catches up to the cumulative end of what we've written.
+        // Each call replaces the previous marker; only the latest fires.
+        val frames = data.size / 2
+        totalFramesWritten += frames
+        try {
+            audioTrack.setNotificationMarkerPosition(totalFramesWritten.toInt())
+        } catch (e: Exception) {
+            Log.e("AudioEngine", "Error setting marker position", e)
+        }
     }
 
     fun bypassVoiceProcessing(bypass: Boolean) {
