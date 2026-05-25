@@ -210,13 +210,8 @@ class AudioEngine {
     
     private func createBuffer(from data: Data) -> AVAudioPCMBuffer? {
         let frameCount = UInt32(data.count) / 2 // 16-bit input = 2 bytes per frame
-        
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                   sampleRate: 24000,
-                                   channels: 1,
-                                   interleaved: false)!
-        
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: voiceIOFormat, frameCapacity: frameCount) else {
             return nil
         }
         

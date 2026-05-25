@@ -14,8 +14,8 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.RequiresApi
-import java.util.LinkedList
 import java.util.Queue
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import kotlin.math.pow
 
@@ -29,7 +29,7 @@ class AudioEngine (context: Context) {
     private lateinit var audioManager: AudioManager
     private lateinit var audioTrack: AudioTrack
     private var audioFocusRequest: AudioFocusRequest? = null
-    private val audioSampleQueue: Queue<ByteArray> = LinkedList()
+    private val audioSampleQueue: Queue<ByteArray> = ConcurrentLinkedQueue()
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private val executorServiceMicrophone = Executors.newFixedThreadPool(1)
