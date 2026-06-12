@@ -1,0 +1,5 @@
+module AicSdk {
+  header "aic.h"
+  link "aic"
+  export *
+}
