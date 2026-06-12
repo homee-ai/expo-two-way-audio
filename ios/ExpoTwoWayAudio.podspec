@@ -29,7 +29,7 @@ Pod::Spec.new do |s|
   # modulemap in Vendored/include.
   s.vendored_frameworks = 'Vendored/aic.xcframework'
   s.preserve_paths = 'Vendored/**/*'
-  s.exclude_files = 'Vendored/**/*'
+  s.exclude_files = 'Vendored/include/**'
   s.resource_bundles = { 'AicModels' => ['Vendored/Models/*.aicmodel'] }
 
   s.source_files = "**/*.{h,m,swift}"
