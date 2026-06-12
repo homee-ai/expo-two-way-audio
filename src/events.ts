@@ -21,6 +21,12 @@ export type AudioInterruptionEvent = {
 // from the wire-level "server finished sending audio" signal.
 export type PlaybackQueueEmptyEvent = Record<string, never>;
 
+// Fired when on-device voice focus fails to initialize or degrades mid-session
+// (the engine falls back to raw passthrough). `data` is a short diagnostic string.
+export type VoiceFocusErrorEvent = {
+  data: string;
+};
+
 export interface ExpoTwoWayAudioEventMap {
   onMicrophoneData: MicrophoneDataEvent;
   onInputVolumeLevelData: VolumeLevelEvent;
@@ -28,6 +34,7 @@ export interface ExpoTwoWayAudioEventMap {
   onRecordingChange: RecordingChangeEvent;
   onAudioInterruption: AudioInterruptionEvent;
   onPlaybackQueueEmpty: PlaybackQueueEmptyEvent;
+  onVoiceFocusError: VoiceFocusErrorEvent;
 }
 
 // These are useful for defining `useCallback` types inline
@@ -36,6 +43,7 @@ export type VolumeLevelCallback = (event: VolumeLevelEvent) => void;
 export type RecordingChangeCallback = (event: RecordingChangeEvent) => void;
 export type AudioInterruptionCallback = (event: AudioInterruptionEvent) => void;
 export type PlaybackQueueEmptyCallback = (event: PlaybackQueueEmptyEvent) => void;
+export type VoiceFocusErrorCallback = (event: VoiceFocusErrorEvent) => void;
 
 export function addExpoTwoWayAudioEventListener<K extends keyof ExpoTwoWayAudioEventMap>(
   eventName: K,
