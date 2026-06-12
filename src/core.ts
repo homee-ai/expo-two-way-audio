@@ -7,7 +7,7 @@ export type InitializeOptions = {
   voiceFocusLicenseKey?: string;
 };
 
-export async function initialize(options?: InitializeOptions) {
+export async function initialize(options?: InitializeOptions): Promise<boolean> {
   if (Platform.OS === "ios") {
     // Android's native initialize() takes no arguments; only iOS accepts the key.
     return await ExpoTwoWayAudioModule.initialize(options?.voiceFocusLicenseKey ?? null);
@@ -21,7 +21,8 @@ export function isVoiceFocusAvailable(): boolean {
   return ExpoTwoWayAudioModule.isVoiceFocusAvailable?.() ?? false;
 }
 
-// Latency-compensated enhancement toggle; no-op when unavailable (e.g. Android).
+// Latency-compensated enhancement toggle. Absent on Android (optional call no-ops);
+// on iOS, also a no-op when the Quail processor wasn't wired into the engine by initialize().
 export function setVoiceFocusEnabled(enabled: boolean) {
   ExpoTwoWayAudioModule.setVoiceFocusEnabled?.(enabled);
 }
