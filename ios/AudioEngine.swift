@@ -164,6 +164,9 @@ class AudioEngine {
             samples = voiceFocus.process(channelData, count: frameCount)
             // Still accumulating toward a full model frame — nothing to emit yet.
             if samples.isEmpty { return }
+            // If process() fails mid-session, the next callback takes the raw
+            // branch below; the SDK's delay-compensated tail (~30 ms) is
+            // intentionally dropped — a small gap, not a click. Don't "fix" it.
         } else {
             samples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
         }
@@ -308,8 +311,10 @@ class AudioEngine {
     
     func resumeRecordingAndPlayer(){
         // Post-interruption audio shouldn't be colored by stale model state.
-        // Safe to reset here: recording is off after the interruption, so the
-        // tap isn't delivering buffers yet (reset's threading contract).
+        // On the JS `restart` path recording may still be on, so the tap could
+        // be delivering buffers concurrently — reset() is lock-protected
+        // against process(), so this is safe regardless (it just discards any
+        // partially-accumulated frame).
         voiceFocus?.reset()
         do {
             try AVAudioSession.sharedInstance().setActive(true)

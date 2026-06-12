@@ -3,20 +3,45 @@ import AicSdk
 
 /// Wraps an aic-sdk Quail speech-enhancement processor for the outgoing mic path.
 ///
-/// Threading contract: `process(_:count:)` must only ever be called from the
+/// Threading contract: `process(_:count:)` is only ever called from the
 /// audio tap thread (the SDK's process call is real-time safe but not
 /// thread-safe). `setEnabled` may be called from any thread (the SDK context
-/// is thread-safe). `reset()` must only be called while the tap is **not**
-/// delivering buffers (i.e. after the engine is stopped or recording is off),
-/// because it mutates the same `pending` accumulator that `process(_:count:)`
-/// uses — concurrent mutation of a Swift Array is undefined behaviour.
+/// is thread-safe). `reset()` is safe to call from any thread: `stateLock`
+/// enforces mutual exclusion with `process(_:count:)` over the shared
+/// `pending` accumulator and SDK state. It is still *intended* to be called
+/// between sessions / after audio interruptions — resetting mid-stream
+/// discards buffered audio.
 final class QuailProcessor {
     static let sampleRate: UInt32 = 24000
+
+    enum InitError: Error, CustomStringConvertible {
+        case modelLoad(AicErrorCode)
+        case frameQuery(AicErrorCode)
+        case processorCreate(AicErrorCode)
+        case processorInitialize(AicErrorCode)
+        case contextCreate(AicErrorCode)
+
+        var description: String {
+            switch self {
+            case .modelLoad(let rc): return "model load failed (rc=\(rc.rawValue))"
+            case .frameQuery(let rc): return "optimal frame query failed (rc=\(rc.rawValue))"
+            case .processorCreate(let rc): return "processor create failed (rc=\(rc.rawValue))"
+            case .processorInitialize(let rc): return "processor initialize failed (rc=\(rc.rawValue))"
+            case .contextCreate(let rc): return "context create failed (rc=\(rc.rawValue))"
+            }
+        }
+    }
 
     private var model: OpaquePointer?
     private var processor: OpaquePointer?
     private var context: OpaquePointer?
     private(set) var optimalFrameCount: Int = 0
+
+    // Serializes process()/reset() over `pending` and the SDK processor state.
+    // The mic tap runs on a non-realtime dispatch queue, so an uncontended
+    // NSLock once per ~85 ms tap callback is negligible (and priority
+    // inversion is not a realtime concern here).
+    private let stateLock = NSLock()
 
     // Mic samples accumulate here until a full model frame is available.
     private var pending: [Float] = []
@@ -47,54 +72,49 @@ final class QuailProcessor {
         return nil
     }
 
-    init?(licenseKey: String, modelPath: String) {
+    init(licenseKey: String, modelPath: String) throws {
         var modelHandle: OpaquePointer?
         var rc = aic_model_create_from_file(&modelHandle, modelPath)
         guard rc == AIC_ERROR_CODE_SUCCESS, let loadedModel = modelHandle else {
-            NSLog("[QuailProcessor] model load failed: \(rc)")
-            return nil
+            throw InitError.modelLoad(rc)
         }
         model = loadedModel
 
         var frames: Int = 0
         rc = aic_model_get_optimal_num_frames(loadedModel, Self.sampleRate, &frames)
         guard rc == AIC_ERROR_CODE_SUCCESS, frames > 0 else {
-            NSLog("[QuailProcessor] optimal frame query failed: \(rc)")
             aic_model_destroy(loadedModel)
             model = nil
-            return nil
+            throw InitError.frameQuery(rc)
         }
         optimalFrameCount = frames
 
         var proc: OpaquePointer?
         rc = aic_processor_create(&proc, loadedModel, licenseKey, nil)
         guard rc == AIC_ERROR_CODE_SUCCESS, let createdProc = proc else {
-            NSLog("[QuailProcessor] processor create failed: \(rc)")
             aic_model_destroy(loadedModel)
             model = nil
-            return nil
+            throw InitError.processorCreate(rc)
         }
         processor = createdProc
 
         rc = aic_processor_initialize(createdProc, Self.sampleRate, 1, frames, false)
         guard rc == AIC_ERROR_CODE_SUCCESS else {
-            NSLog("[QuailProcessor] processor initialize failed: \(rc)")
             aic_processor_destroy(createdProc)
             aic_model_destroy(loadedModel)
             processor = nil
             model = nil
-            return nil
+            throw InitError.processorInitialize(rc)
         }
 
         var ctx: OpaquePointer?
         rc = aic_processor_context_create(&ctx, createdProc)
         guard rc == AIC_ERROR_CODE_SUCCESS, let createdCtx = ctx else {
-            NSLog("[QuailProcessor] context create failed: \(rc)")
             aic_processor_destroy(createdProc)
             aic_model_destroy(loadedModel)
             processor = nil
             model = nil
-            return nil
+            throw InitError.contextCreate(rc)
         }
         context = createdCtx
 
@@ -116,10 +136,12 @@ final class QuailProcessor {
 
     /// Clears SDK state and the local accumulator. Call between sessions and
     /// after audio interruptions so stale audio doesn't color the next frames.
-    /// Must only be called while the audio tap is not delivering buffers (see
-    /// class-level threading contract). Also resets `hasFailed` so the new
-    /// session gets at most one enhancement-error retry.
+    /// Safe from any thread — `stateLock` excludes a concurrent
+    /// `process(_:count:)` (see class-level threading contract). Also resets
+    /// `hasFailed` so the new session gets at most one enhancement-error retry.
     func reset() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if let context {
             aic_processor_context_reset(context)
         }
@@ -133,6 +155,8 @@ final class QuailProcessor {
     /// and returns the failing chunk as-is (possibly partially processed by the
     /// SDK) plus the remaining buffered input, so no audio is lost.
     func process(_ samples: UnsafePointer<Float>, count: Int) -> [Float] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if hasFailed {
             return Array(UnsafeBufferPointer(start: samples, count: count))
         }

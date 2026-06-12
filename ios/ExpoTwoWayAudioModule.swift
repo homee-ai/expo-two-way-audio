@@ -28,10 +28,14 @@ public class ExpoTwoWayAudioModule: Module {
 
         AsyncFunction("initialize") { (voiceFocusLicenseKey: String?) -> Bool in
             do {
+                // Create the processor before the early return so a keyed
+                // initialize after a keyless one still warms the cache.
+                // Injection still only happens when a fresh engine is created
+                // below — an already-running engine keeps its current pipeline.
+                self.ensureQuailProcessor(licenseKey: voiceFocusLicenseKey)
                 if self.audioEngine != nil {
                     return true
                 }
-                self.ensureQuailProcessor(licenseKey: voiceFocusLicenseKey)
                 self.audioEngine = try AudioEngine()
                 // Only inject the processor when its rate matches the engine's
                 // mic tap format; otherwise enhancement would distort the audio.
@@ -58,7 +62,10 @@ public class ExpoTwoWayAudioModule: Module {
         }
 
         Function("isVoiceFocusAvailable") { () -> Bool in
-            return self.quailProcessor?.isAvailable ?? false
+            // Reads the engine's injected reference, not the cached processor:
+            // "available" means wired into the live pipeline. The cache can hold
+            // a working processor that was skipped on sample-rate mismatch.
+            return self.audioEngine?.voiceFocus?.isAvailable ?? false
         }
 
         Function("setVoiceFocusEnabled") { (enabled: Bool) in
@@ -190,8 +197,13 @@ public class ExpoTwoWayAudioModule: Module {
             self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "aicmodel missing from bundle"])
             return
         }
-        guard let quail = QuailProcessor(licenseKey: key, modelPath: modelPath) else {
-            self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "processor init failed"])
+        let quail: QuailProcessor
+        do {
+            quail = try QuailProcessor(licenseKey: key, modelPath: modelPath)
+        } catch {
+            // `\(error)` renders InitError's CustomStringConvertible description
+            // (stage + SDK error code).
+            self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "processor init failed: \(error)"])
             return
         }
         quail.onError = { [weak self] message in
