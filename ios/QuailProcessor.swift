@@ -5,8 +5,11 @@ import AicSdk
 ///
 /// Threading contract: `process(_:count:)` must only ever be called from the
 /// audio tap thread (the SDK's process call is real-time safe but not
-/// thread-safe). `setEnabled`/`reset` go through the SDK's thread-safe
-/// processor context, so they may be called from any thread.
+/// thread-safe). `setEnabled` may be called from any thread (the SDK context
+/// is thread-safe). `reset()` must only be called while the tap is **not**
+/// delivering buffers (i.e. after the engine is stopped or recording is off),
+/// because it mutates the same `pending` accumulator that `process(_:count:)`
+/// uses — concurrent mutation of a Swift Array is undefined behaviour.
 final class QuailProcessor {
     static let sampleRate: UInt32 = 24000
 
@@ -17,7 +20,10 @@ final class QuailProcessor {
 
     // Mic samples accumulate here until a full model frame is available.
     private var pending: [Float] = []
-    // Latched on the first process() error; from then on input passes through raw.
+    // Latched on the first process() error within a session; cleared by reset() so each
+    // new session gets at most one retry (and at most one onError event per session).
+    // Written on the tap queue; read from other threads via `isAvailable`. A torn Bool
+    // read is benign on arm64 and acceptable here — revisit under Swift 6 strict concurrency.
     private(set) var hasFailed = false
     var onError: ((String) -> Void)?
 
@@ -32,7 +38,9 @@ final class QuailProcessor {
         ]
         for case let url? in candidates {
             if let bundle = Bundle(url: url),
-               let path = bundle.path(forResource: "quail_vf_2_1_s_16khz_5i8jb8of_v12", ofType: "aicmodel") {
+               let path = bundle.paths(forResourcesOfType: "aicmodel", inDirectory: nil).first {
+                // Enumerate instead of hardcoding the filename: the vendor script controls
+                // which single .aicmodel ships, keeping the two automatically in sync.
                 return path
             }
         }
@@ -108,17 +116,22 @@ final class QuailProcessor {
 
     /// Clears SDK state and the local accumulator. Call between sessions and
     /// after audio interruptions so stale audio doesn't color the next frames.
+    /// Must only be called while the audio tap is not delivering buffers (see
+    /// class-level threading contract). Also resets `hasFailed` so the new
+    /// session gets at most one enhancement-error retry.
     func reset() {
         if let context {
             aic_processor_context_reset(context)
         }
         pending.removeAll(keepingCapacity: true)
+        hasFailed = false
     }
 
     /// Feeds raw mic samples; returns the enhanced samples that are ready (a
     /// multiple of the model frame size — possibly empty while accumulating).
     /// On the first SDK error this latches `hasFailed`, reports via `onError`,
-    /// and returns the buffered input unprocessed so no audio is lost.
+    /// and returns the failing chunk as-is (possibly partially processed by the
+    /// SDK) plus the remaining buffered input, so no audio is lost.
     func process(_ samples: UnsafePointer<Float>, count: Int) -> [Float] {
         if hasFailed {
             return Array(UnsafeBufferPointer(start: samples, count: count))
@@ -126,6 +139,9 @@ final class QuailProcessor {
         pending.append(contentsOf: UnsafeBufferPointer(start: samples, count: count))
 
         var output: [Float] = []
+        // Per-callback Array allocations below are deliberate: the tap runs on a
+        // non-realtime dispatch queue so heap allocation is safe. Revisit only if
+        // this moves to a realtime (AudioUnit render) thread.
         while pending.count >= optimalFrameCount {
             var chunk = Array(pending.prefix(optimalFrameCount))
             pending.removeFirst(optimalFrameCount)
