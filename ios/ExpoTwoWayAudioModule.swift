@@ -6,9 +6,12 @@ let ON_OUTPUT_VOLUME_LEVEL_EVENT_NAME = "onOutputVolumeLevelData"
 let ON_RECORDING_CHANGE_EVENT_NAME = "onRecordingChange"
 let ON_AUDIO_INTERRUPTION_EVENT_NAME = "onAudioInterruption"
 let ON_PLAYBACK_QUEUE_EMPTY_EVENT_NAME = "onPlaybackQueueEmpty"
+let ON_VOICE_FOCUS_ERROR_EVENT_NAME = "onVoiceFocusError"
 
 public class ExpoTwoWayAudioModule: Module {
     private var audioEngine: AudioEngine?
+    private var quailProcessor: QuailProcessor?
+    private var quailInitAttempted = false
     public func definition() -> ModuleDefinition {
         Name("ExpoTwoWayAudio")
 
@@ -23,12 +26,25 @@ public class ExpoTwoWayAudioModule: Module {
 
         }
 
-        AsyncFunction("initialize") { () -> Bool in
+        AsyncFunction("initialize") { (voiceFocusLicenseKey: String?) -> Bool in
             do {
                 if self.audioEngine != nil {
                     return true
                 }
+                self.ensureQuailProcessor(licenseKey: voiceFocusLicenseKey)
                 self.audioEngine = try AudioEngine()
+                // Only inject the processor when its rate matches the engine's
+                // mic tap format; otherwise enhancement would distort the audio.
+                // The engine was just created, so the tap isn't delivering
+                // buffers yet and reset() is safe to call.
+                if let engine = self.audioEngine, let quail = self.quailProcessor {
+                    if QuailProcessor.sampleRate == UInt32(engine.voiceIOFormat.sampleRate) {
+                        engine.voiceFocus = quail
+                        quail.reset()
+                    } else {
+                        self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "sample-rate mismatch: engine \(engine.voiceIOFormat.sampleRate) vs processor \(QuailProcessor.sampleRate)"])
+                    }
+                }
                 self.setupMicrophoneCallback()
                 self.setupInputAudioLevelCallback()
                 self.setupOutputAudioLevelCallback()
@@ -39,6 +55,14 @@ public class ExpoTwoWayAudioModule: Module {
                 print("Failed to initialize AudioEngine: \(error)")
                 return false
             }
+        }
+
+        Function("isVoiceFocusAvailable") { () -> Bool in
+            return self.quailProcessor?.isAvailable ?? false
+        }
+
+        Function("setVoiceFocusEnabled") { (enabled: Bool) in
+            self.quailProcessor?.setEnabled(enabled)
         }
 
         Function("isRecording") { () -> Bool in
@@ -150,7 +174,30 @@ public class ExpoTwoWayAudioModule: Module {
             ON_RECORDING_CHANGE_EVENT_NAME,
             ON_AUDIO_INTERRUPTION_EVENT_NAME,
             ON_PLAYBACK_QUEUE_EMPTY_EVENT_NAME,
+            ON_VOICE_FOCUS_ERROR_EVENT_NAME,
         ])
+    }
+
+    // Creates the Quail processor once per app run. The model + processor are
+    // cached across sessions (model load reads a ~5 MB file); a failed attempt
+    // is not retried — the session falls back to the relay path instead.
+    private func ensureQuailProcessor(licenseKey: String?) {
+        guard quailProcessor == nil, !quailInitAttempted else { return }
+        guard let key = licenseKey, !key.isEmpty else { return }
+        quailInitAttempted = true
+
+        guard let modelPath = QuailProcessor.bundledModelPath() else {
+            self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "aicmodel missing from bundle"])
+            return
+        }
+        guard let quail = QuailProcessor(licenseKey: key, modelPath: modelPath) else {
+            self.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": "processor init failed"])
+            return
+        }
+        quail.onError = { [weak self] message in
+            self?.sendEvent(ON_VOICE_FOCUS_ERROR_EVENT_NAME, ["data": message])
+        }
+        quailProcessor = quail
     }
 
     private func setupMicrophoneCallback() {
