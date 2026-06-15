@@ -45,6 +45,7 @@ class ExpoTwoWayAudioModule : Module() {
                 setupCallbacks()
                 promise.resolve(true)
             } catch (e: Exception) {
+                android.util.Log.e("ExpoTwoWayAudio", "initialize failed", e)
                 promise.resolve(false)
             }
         }

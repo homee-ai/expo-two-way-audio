@@ -51,6 +51,7 @@ class AudioEngine (context: Context) {
 
     // Optional on-device speech enhancement, injected by the module after init.
     // Owned by the module so the loaded model survives engine teardown/recreate.
+    @Volatile
     var voiceFocus: QuailProcessor? = null
 
     // Tracks cumulative frames written so we can update the AudioTrack marker
