@@ -47,16 +47,14 @@ android {
         cppFlags "-std=c++17"
       }
     }
+    // Ships the JNI keep-rules to the consuming app's release (ProGuard) build.
+    consumerProguardFiles "proguard-rules.pro"
   }
   externalNativeBuild {
     cmake {
       path "CMakeLists.txt"
       version "3.22.1"
     }
-  }
-  // Ships the JNI keep-rules to the consuming app's release (ProGuard) build.
-  defaultConfig {
-    consumerProguardFiles "proguard-rules.pro"
   }
   lintOptions {
     abortOnError false

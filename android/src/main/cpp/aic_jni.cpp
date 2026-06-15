@@ -104,6 +104,7 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeProcess(
 
     const jsize sampleCount = lenBytes / 2;
     jbyte *raw = env->GetByteArrayElements(input, nullptr);
+    if (raw == nullptr) return env->NewByteArray(0);
     auto *bytes = reinterpret_cast<uint8_t *>(raw);
     for (jsize i = 0; i < sampleCount; ++i) {
         int16_t s = (int16_t) (bytes[i * 2] | (bytes[i * 2 + 1] << 8));
