@@ -15,7 +15,12 @@ import java.io.File
  */
 class QuailProcessor private constructor(private var handle: Long) {
 
-    /** Latched on the first process() error; from then on input passes through raw. */
+    /**
+     * Latched on the first process() error; from then on input passes through raw.
+     * @Volatile publishes the latch across threads: written on the mic-tap thread
+     * (process()) and cleared on the JS-bridge thread (reset()).
+     */
+    @Volatile
     private var hasFailed = false
     var onError: ((String) -> Unit)? = null
 
