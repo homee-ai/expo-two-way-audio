@@ -1,28 +1,24 @@
 import { type PermissionResponse, createPermissionHook } from "expo-modules-core";
-import { Platform } from "react-native";
 import ExpoTwoWayAudioModule from "./ExpoTwoWayAudioModule";
 
 export type InitializeOptions = {
-  // ai-coustics SDK license key. iOS-only: enables on-device Quail voice focus.
+  // ai-coustics SDK license key. Enables on-device Quail voice focus (iOS + Android).
   voiceFocusLicenseKey?: string;
 };
 
 export async function initialize(options?: InitializeOptions): Promise<boolean> {
-  if (Platform.OS === "ios") {
-    // Android's native initialize() takes no arguments; only iOS accepts the key.
-    return await ExpoTwoWayAudioModule.initialize(options?.voiceFocusLicenseKey ?? null);
-  }
-  return await ExpoTwoWayAudioModule.initialize();
+  // Both iOS and Android native initialize() accept the license key (or null).
+  return await ExpoTwoWayAudioModule.initialize(options?.voiceFocusLicenseKey ?? null);
 }
 
-// True only on iOS after initialize() wired the Quail processor into the live
-// audio engine (false before initialize, on failure, or on Android).
+// True after initialize() wired the Quail processor into the live audio engine
+// (false before initialize, on init failure, or when no license key was provided).
 export function isVoiceFocusAvailable(): boolean {
   return ExpoTwoWayAudioModule.isVoiceFocusAvailable?.() ?? false;
 }
 
-// Latency-compensated enhancement toggle. Absent on Android (optional call no-ops);
-// on iOS, also a no-op when the Quail processor wasn't wired into the engine by initialize().
+// Latency-compensated enhancement toggle; a no-op when the processor wasn't wired
+// into the engine by initialize().
 export function setVoiceFocusEnabled(enabled: boolean) {
   ExpoTwoWayAudioModule.setVoiceFocusEnabled?.(enabled);
 }
