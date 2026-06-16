@@ -110,8 +110,10 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeProcess(
     }
     std::lock_guard<std::mutex> lock(st->mutex);
 
-    // Clamp to the real array length (and an even byte count) so a caller passing
-    // a stale/oversized lenBytes can't drive an out-of-bounds read of `raw`.
+    // Clamp to the real array length so a caller passing a stale/oversized
+    // lenBytes can't drive an out-of-bounds read of `raw`. An odd lenBytes is
+    // safe: sampleCount truncates, so the loop reads at most 2*(lenBytes/2)
+    // <= lenBytes bytes (the trailing odd byte is simply dropped).
     const jsize arrayLen = env->GetArrayLength(input);
     if (lenBytes > arrayLen) lenBytes = arrayLen;
     const jsize sampleCount = lenBytes / 2;
