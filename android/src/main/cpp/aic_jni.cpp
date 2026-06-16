@@ -48,6 +48,14 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeCreate(
 
     const char *keyC = env->GetStringUTFChars(licenseKey, nullptr);
     const char *pathC = env->GetStringUTFChars(modelPath, nullptr);
+    // GetStringUTFChars returns null on allocation failure; releasing a null
+    // pointer is undefined behavior, so bail before constructing any state.
+    if (keyC == nullptr || pathC == nullptr) {
+        if (keyC != nullptr) env->ReleaseStringUTFChars(licenseKey, keyC);
+        if (pathC != nullptr) env->ReleaseStringUTFChars(modelPath, pathC);
+        setError((int) AIC_ERROR_CODE_NULL_POINTER);
+        return 0;
+    }
     auto release = [&]() {
         env->ReleaseStringUTFChars(licenseKey, keyC);
         env->ReleaseStringUTFChars(modelPath, pathC);
@@ -102,6 +110,10 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeProcess(
     }
     std::lock_guard<std::mutex> lock(st->mutex);
 
+    // Clamp to the real array length (and an even byte count) so a caller passing
+    // a stale/oversized lenBytes can't drive an out-of-bounds read of `raw`.
+    const jsize arrayLen = env->GetArrayLength(input);
+    if (lenBytes > arrayLen) lenBytes = arrayLen;
     const jsize sampleCount = lenBytes / 2;
     jbyte *raw = env->GetByteArrayElements(input, nullptr);
     if (raw == nullptr) return env->NewByteArray(0);
@@ -134,6 +146,9 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeProcess(
 
     const jsize outBytes = (jsize) (out.size() * 2);
     jbyteArray result = env->NewByteArray(outBytes);
+    // Null on JVM allocation failure; return null (Kotlin latches + passes through)
+    // rather than dereferencing it in SetByteArrayRegion below.
+    if (result == nullptr) return nullptr;
     if (outBytes > 0) {
         std::vector<jbyte> buf(outBytes);
         for (size_t i = 0; i < out.size(); ++i) {

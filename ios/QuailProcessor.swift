@@ -180,7 +180,7 @@ final class QuailProcessor {
                 hasFailed = true
                 let leftover = pending
                 pending.removeAll(keepingCapacity: false)
-                onError?("aic_processor_process_planar failed: \(rc)")
+                onError?("aic_processor_process_planar failed: \(rc.rawValue)")
                 return output + chunk + leftover
             }
             output.append(contentsOf: chunk)

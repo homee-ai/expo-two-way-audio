@@ -36,7 +36,14 @@ class QuailProcessor private constructor(private var handle: Long) {
      */
     fun process(input: ByteArray): ByteArray {
         if (hasFailed || handle == 0L) return input
-        val out = nativeProcess(handle, input, input.size)
+        // nativeProcess can return null if the JVM fails to allocate the output
+        // array (native OOM); latch + pass the raw input through so audio is never
+        // dropped and the non-null contract downstream holds.
+        val out = nativeProcess(handle, input, input.size) ?: run {
+            hasFailed = true
+            onError?.invoke("nativeProcess returned null (native allocation failed)")
+            return input
+        }
         val rc = nativeTakeError(handle)
         if (rc != 0) {
             hasFailed = true
@@ -75,18 +82,38 @@ class QuailProcessor private constructor(private var handle: Long) {
     companion object {
         private const val MODEL_ASSET = "quail_vf_2_1_s_16khz_5i8jb8of_v12.aicmodel"
 
+        // Sentinel rc for "native libraries could not be loaded" (no SDK call was
+        // reached), distinct from the SDK's non-negative error codes.
+        private const val NATIVE_UNAVAILABLE = -1
+
+        // We ship arm64-v8a only; on any other ABI the .so is absent and
+        // loadLibrary throws UnsatisfiedLinkError. Catch it so the class still
+        // initializes and invoke() can fail gracefully into the relay path
+        // instead of crashing the app (the error escapes initialize()'s
+        // catch(Exception) otherwise — UnsatisfiedLinkError is an Error).
+        @Volatile
+        private var nativeLibLoaded = false
+
         init {
-            // Load the prebuilt SDK first so the shim's DT_NEEDED resolves on all
-            // supported API levels (older linkers don't auto-resolve siblings).
-            System.loadLibrary("aic")
-            System.loadLibrary("twowayaudio_aic")
+            nativeLibLoaded = try {
+                // Load the prebuilt SDK first so the shim's DT_NEEDED resolves on all
+                // supported API levels (older linkers don't auto-resolve siblings).
+                System.loadLibrary("aic")
+                System.loadLibrary("twowayaudio_aic")
+                true
+            } catch (t: UnsatisfiedLinkError) {
+                Log.e("QuailProcessor", "native voice-focus libraries unavailable for this ABI", t)
+                false
+            }
         }
 
         /**
-         * Creates a processor, throwing [InitError] (with the SDK rc) on failure.
+         * Creates a processor, throwing [InitError] (with the SDK rc, or
+         * [NATIVE_UNAVAILABLE] when the native libraries failed to load) on failure.
          */
         @Throws(InitError::class)
         operator fun invoke(licenseKey: String, modelPath: String): QuailProcessor {
+            if (!nativeLibLoaded) throw InitError(NATIVE_UNAVAILABLE)
             val err = IntArray(1)
             val handle = nativeCreate(licenseKey, modelPath, err)
             if (handle == 0L) throw InitError(err[0])
@@ -102,8 +129,20 @@ class QuailProcessor private constructor(private var handle: Long) {
         fun copyBundledModel(context: Context): String? = try {
             val outFile = File(context.filesDir, MODEL_ASSET)
             if (!outFile.exists() || outFile.length() == 0L) {
-                context.assets.open(MODEL_ASSET).use { input ->
-                    outFile.outputStream().use { output -> input.copyTo(output) }
+                // Copy to a temp file then atomically rename, so a crash/kill/disk-full
+                // mid-copy can't leave a partial file that exists() accepts on the next
+                // launch (which would fail model load forever).
+                val tempFile = File.createTempFile("model_", ".tmp", context.filesDir)
+                try {
+                    context.assets.open(MODEL_ASSET).use { input ->
+                        tempFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    if (!tempFile.renameTo(outFile)) {
+                        throw java.io.IOException("failed to rename model temp file to $outFile")
+                    }
+                } catch (e: Exception) {
+                    tempFile.delete()
+                    throw e
                 }
             }
             outFile.absolutePath
@@ -113,7 +152,7 @@ class QuailProcessor private constructor(private var handle: Long) {
         }
 
         @JvmStatic private external fun nativeCreate(licenseKey: String, modelPath: String, outError: IntArray): Long
-        @JvmStatic private external fun nativeProcess(handle: Long, input: ByteArray, len: Int): ByteArray
+        @JvmStatic private external fun nativeProcess(handle: Long, input: ByteArray, len: Int): ByteArray?
         @JvmStatic private external fun nativeTakeError(handle: Long): Int
         @JvmStatic private external fun nativeSetEnabled(handle: Long, enabled: Boolean)
         @JvmStatic private external fun nativeReset(handle: Long)

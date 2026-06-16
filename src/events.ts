@@ -23,7 +23,7 @@ export type PlaybackQueueEmptyEvent = Record<string, never>;
 
 // Fired when on-device voice focus fails to initialize or degrades mid-session
 // (the engine falls back to raw passthrough). `data` is a short diagnostic string.
-// iOS-only — Android never emits this event.
+// Emitted on both iOS and Android.
 export type VoiceFocusErrorEvent = {
   data: string;
 };

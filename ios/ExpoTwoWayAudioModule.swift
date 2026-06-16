@@ -69,7 +69,10 @@ public class ExpoTwoWayAudioModule: Module {
         }
 
         Function("setVoiceFocusEnabled") { (enabled: Bool) in
-            self.quailProcessor?.setEnabled(enabled)
+            // Toggle the processor actually wired into the engine, matching
+            // isVoiceFocusAvailable's semantics — the cache can hold a processor
+            // that was skipped on sample-rate mismatch and never injected.
+            self.audioEngine?.voiceFocus?.setEnabled(enabled)
         }
 
         Function("isRecording") { () -> Bool in

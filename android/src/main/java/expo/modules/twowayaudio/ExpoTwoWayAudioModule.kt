@@ -57,7 +57,10 @@ class ExpoTwoWayAudioModule : Module() {
         }
 
         Function("setVoiceFocusEnabled") { enabled: Boolean ->
-            quailProcessor?.setEnabled(enabled)
+            // Toggle the processor actually wired into the engine, matching
+            // isVoiceFocusAvailable's semantics — never a cached processor that
+            // wasn't injected into the live pipeline.
+            audioEngine?.voiceFocus?.setEnabled(enabled)
         }
 
          Function("isRecording") {
