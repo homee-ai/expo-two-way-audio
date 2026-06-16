@@ -75,6 +75,13 @@ class ExpoTwoWayAudioModule : Module() {
          Function("tearDown") {
              audioEngine?.tearDown()
              audioEngine = null
+             // Allow a fresh init attempt next session. A successful processor
+             // stays cached (the `quailProcessor != null` guard in
+             // ensureQuailProcessor short-circuits, so the ~5 MB model isn't
+             // reloaded); this only re-enables retry when a prior attempt FAILED.
+             // Without it, the process-static companion would mask retries across
+             // a dev JS-reload (iOS retries because its module instance is fresh).
+             quailInitAttempted = false
              null
          }
 
