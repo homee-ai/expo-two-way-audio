@@ -137,6 +137,12 @@ class QuailProcessor private constructor(private var handle: Long) {
                     context.assets.open(MODEL_ASSET).use { input ->
                         tempFile.outputStream().use { output -> input.copyTo(output) }
                     }
+                    // Remove any stale (zero-byte) placeholder first: File.renameTo
+                    // over an existing destination isn't guaranteed across Android
+                    // versions/filesystems, so don't rely on POSIX overwrite here.
+                    if (outFile.exists() && !outFile.delete()) {
+                        throw java.io.IOException("failed to delete stale model file $outFile")
+                    }
                     if (!tempFile.renameTo(outFile)) {
                         throw java.io.IOException("failed to rename model temp file to $outFile")
                     }

@@ -46,6 +46,13 @@ Java_expo_modules_twowayaudio_QuailProcessor_nativeCreate(
         }
     };
 
+    // GetStringUTFChars with a null jstring is undefined behavior, so reject a
+    // null reference up front (the Kotlin caller passes non-null Strings today;
+    // this is defensive).
+    if (licenseKey == nullptr || modelPath == nullptr) {
+        setError((int) AIC_ERROR_CODE_NULL_POINTER);
+        return 0;
+    }
     const char *keyC = env->GetStringUTFChars(licenseKey, nullptr);
     const char *pathC = env->GetStringUTFChars(modelPath, nullptr);
     // GetStringUTFChars returns null on allocation failure; releasing a null
@@ -105,7 +112,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_expo_modules_twowayaudio_QuailProcessor_nativeProcess(
         JNIEnv *env, jclass, jlong handle, jbyteArray input, jint lenBytes) {
     auto *st = reinterpret_cast<QuailState *>(handle);
-    if (st == nullptr || lenBytes <= 0) {
+    if (st == nullptr || input == nullptr || lenBytes <= 0) {
         return env->NewByteArray(0);
     }
     std::lock_guard<std::mutex> lock(st->mutex);
