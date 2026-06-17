@@ -1,6 +1,6 @@
 package expo.modules.twowayaudio
 
-import AudioEngine
+import android.content.Context
 import androidx.core.os.bundleOf
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -15,23 +15,52 @@ class ExpoTwoWayAudioModule : Module() {
         private const val ON_RECORDING_CHANGE_EVENT = "onRecordingChange"
         private const val ON_AUDIO_INTERRUPTION_EVENT = "onAudioInterruption"
         private const val ON_PLAYBACK_QUEUE_EMPTY_EVENT = "onPlaybackQueueEmpty"
+        private const val ON_VOICE_FOCUS_ERROR_EVENT = "onVoiceFocusError"
         var audioEngine: AudioEngine? = null
+        var quailProcessor: QuailProcessor? = null
+        var quailInitAttempted = false
     }
 
     override fun definition() = ModuleDefinition {
         Name("ExpoTwoWayAudio")
-        AsyncFunction("initialize") { promise: Promise ->
+        AsyncFunction("initialize") { voiceFocusLicenseKey: String?, promise: Promise ->
             try {
                 if (audioEngine != null) {
                     promise.resolve(true)
                     return@AsyncFunction
                 }
-                audioEngine = appContext.reactContext?.let { AudioEngine(it) }
+                val context = appContext.reactContext
+                if (context == null) {
+                    promise.resolve(false)
+                    return@AsyncFunction
+                }
+                // Create the processor before the engine so it can be injected; a
+                // failed/absent key leaves voiceFocus null and the relay path is used.
+                ensureQuailProcessor(context, voiceFocusLicenseKey)
+                audioEngine = AudioEngine(context)
+                // Android captures at a fixed 24 kHz (AudioRecord SAMPLE_RATE), the
+                // processor's configured rate, so no sample-rate mismatch is possible.
+                audioEngine?.voiceFocus = quailProcessor
+                quailProcessor?.reset()
                 setupCallbacks()
                 promise.resolve(true)
             } catch (e: Exception) {
+                android.util.Log.e("ExpoTwoWayAudio", "initialize failed", e)
                 promise.resolve(false)
             }
+        }
+
+        Function("isVoiceFocusAvailable") {
+            // Reads the engine's injected reference: "available" means wired into
+            // the live pipeline.
+            audioEngine?.voiceFocus?.isAvailable ?: false
+        }
+
+        Function("setVoiceFocusEnabled") { enabled: Boolean ->
+            // Toggle the processor actually wired into the engine, matching
+            // isVoiceFocusAvailable's semantics — never a cached processor that
+            // wasn't injected into the live pipeline.
+            audioEngine?.voiceFocus?.setEnabled(enabled)
         }
 
          Function("isRecording") {
@@ -49,6 +78,13 @@ class ExpoTwoWayAudioModule : Module() {
          Function("tearDown") {
              audioEngine?.tearDown()
              audioEngine = null
+             // Allow a fresh init attempt next session. A successful processor
+             // stays cached (the `quailProcessor != null` guard in
+             // ensureQuailProcessor short-circuits, so the ~5 MB model isn't
+             // reloaded); this only re-enables retry when a prior attempt FAILED.
+             // Without it, the process-static companion would mask retries across
+             // a dev JS-reload (iOS retries because its module instance is fresh).
+             quailInitAttempted = false
              null
          }
 
@@ -106,8 +142,34 @@ class ExpoTwoWayAudioModule : Module() {
             ON_OUTPUT_VOLUME_LEVEL_EVENT,
             ON_RECORDING_CHANGE_EVENT,
             ON_AUDIO_INTERRUPTION_EVENT,
-            ON_PLAYBACK_QUEUE_EMPTY_EVENT
+            ON_PLAYBACK_QUEUE_EMPTY_EVENT,
+            ON_VOICE_FOCUS_ERROR_EVENT
         )
+    }
+
+    // Creates the Quail processor once per app run. The model + processor are
+    // cached across sessions (model load reads a ~5 MB file); a failed attempt
+    // is not retried — the session falls back to the relay path instead.
+    private fun ensureQuailProcessor(context: Context, licenseKey: String?) {
+        if (quailProcessor != null || quailInitAttempted) return
+        if (licenseKey.isNullOrEmpty()) return
+        quailInitAttempted = true
+
+        val modelPath = QuailProcessor.copyBundledModel(context)
+        if (modelPath == null) {
+            sendEvent(ON_VOICE_FOCUS_ERROR_EVENT, mapOf("data" to "aicmodel missing from assets"))
+            return
+        }
+        val quail = try {
+            QuailProcessor(licenseKey, modelPath)
+        } catch (e: QuailProcessor.InitError) {
+            sendEvent(ON_VOICE_FOCUS_ERROR_EVENT, mapOf("data" to "processor init failed: code=${e.code}"))
+            return
+        }
+        quail.onError = { message ->
+            sendEvent(ON_VOICE_FOCUS_ERROR_EVENT, mapOf("data" to message))
+        }
+        quailProcessor = quail
     }
 
     private fun setupCallbacks() {

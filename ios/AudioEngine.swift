@@ -17,6 +17,10 @@ class AudioEngine {
     public var onAudioInterruptionCallback: ((String) -> Void)?
     public var onPlaybackQueueEmptyCallback: (() -> Void)?
 
+    // Optional on-device speech enhancement, injected by the module after init.
+    // Owned by the module so the loaded model survives engine teardown/recreate.
+    public var voiceFocus: QuailProcessor?
+
     // Tracks scheduled-but-not-yet-played buffers. Fires onPlaybackQueueEmptyCallback
     // when the count transitions to 0. flushPlayback() bumps `playbackGeneration`
     // so completion handlers for dropped buffers don't decrement the next session's count.
@@ -146,23 +150,34 @@ class AudioEngine {
             print("Error: Could not access channel data")
             return
         }
-        
+
         let frameCount = Int(buffer.frameLength)
-        var int16Samples = [Int16](repeating: 0, count: frameCount)
-        
-        // Convert float samples to Int16 and update input buffer for volume calculation
+
+        // The volume meter reflects the raw mic signal regardless of enhancement.
         for i in 0..<frameCount {
-            let floatSample = max(-1.0, min(1.0, channelData[i]))
-            int16Samples[i] = Int16(floatSample * Float(Int16.max))
-            
-            inputBuffer[inputBufferIndex] = floatSample
+            inputBuffer[inputBufferIndex] = max(-1.0, min(1.0, channelData[i]))
             inputBufferIndex = (inputBufferIndex + 1) % inputBuffer.count
         }
-        
-        // Create Data object from Int16 samples
-        let data = Data(bytes: int16Samples, count: frameCount * MemoryLayout<Int16>.size)
-        
-        // Send the data to the callback
+
+        let samples: [Float]
+        if let voiceFocus, voiceFocus.isAvailable {
+            samples = voiceFocus.process(channelData, count: frameCount)
+            // Still accumulating toward a full model frame — nothing to emit yet.
+            if samples.isEmpty { return }
+            // If process() fails mid-session, the next callback takes the raw
+            // branch below; the SDK's delay-compensated tail (~30 ms) is
+            // intentionally dropped — a small gap, not a click. Don't "fix" it.
+        } else {
+            samples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
+        }
+
+        var int16Samples = [Int16](repeating: 0, count: samples.count)
+        for i in 0..<samples.count {
+            let floatSample = max(-1.0, min(1.0, samples[i]))
+            int16Samples[i] = Int16(floatSample * Float(Int16.max))
+        }
+
+        let data = Data(bytes: int16Samples, count: int16Samples.count * MemoryLayout<Int16>.size)
         onMicDataCallback?(data)
     }
     
@@ -295,6 +310,12 @@ class AudioEngine {
     }
     
     func resumeRecordingAndPlayer(){
+        // Post-interruption audio shouldn't be colored by stale model state.
+        // On the JS `restart` path recording may still be on, so the tap could
+        // be delivering buffers concurrently — reset() is lock-protected
+        // against process(), so this is safe regardless (it just discards any
+        // partially-accumulated frame).
+        voiceFocus?.reset()
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {

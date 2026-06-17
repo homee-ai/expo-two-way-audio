@@ -1,3 +1,5 @@
+package expo.modules.twowayaudio
+
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
@@ -46,6 +48,11 @@ class AudioEngine (context: Context) {
     var onOutputVolumeCallback: ((Float) -> Unit)? = null
     var onAudioInterruptionCallback: ((String) -> Unit)? = null
     var onPlaybackQueueEmptyCallback: (() -> Unit)? = null
+
+    // Optional on-device speech enhancement, injected by the module after init.
+    // Owned by the module so the loaded model survives engine teardown/recreate.
+    @Volatile
+    var voiceFocus: QuailProcessor? = null
 
     // Tracks cumulative frames written so we can update the AudioTrack marker
     // after each chunk. The OnPlaybackPositionUpdateListener fires when the
@@ -230,9 +237,16 @@ class AudioEngine (context: Context) {
                     val read = audioRecord.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val data = buffer.copyOf(read)
-                        val micVolume = calculateRMSLevel(data)
-                        onInputVolumeCallback?.invoke(micVolume)
-                        onMicDataCallback?.invoke(data)
+                        // Volume meter reflects the RAW mic signal (pre-enhancement).
+                        onInputVolumeCallback?.invoke(calculateRMSLevel(data))
+                        val vf = voiceFocus
+                        if (vf != null && vf.isAvailable) {
+                            val enhanced = vf.process(data)
+                            // Empty while still accumulating a full model frame — emit nothing yet.
+                            if (enhanced.isNotEmpty()) onMicDataCallback?.invoke(enhanced)
+                        } else {
+                            onMicDataCallback?.invoke(data)
+                        }
                     }
                 }
                 Log.d("AudioEngine", "Mic sample tap stopped.")
@@ -364,6 +378,7 @@ class AudioEngine (context: Context) {
 
     @RequiresApi(Build.VERSION_CODES.Q)
     fun resumeRecordingAndPlayer() {
+        voiceFocus?.reset()
         requestAudioFocus()
         isRecording = toggleRecording(isRecordingBeforePause)
         audioTrack.play()
